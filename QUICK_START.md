@@ -295,3 +295,22 @@ console.log('✅ Success:', result.transaction.to);
 ## 🎉 Success!
 
 You're now ready to use the Arbitrum Bridge MCP Server! The system is production-ready with comprehensive security measures and full EmberAGI compatibility.
+
+## 🔌 Ember Plugin Usage
+
+If you are using the Ember Plugin System, import the bridge plugin and register it with your registry:
+
+```ts
+import { PublicEmberPluginRegistry } from '@ember/onchain-actions-plugins/registry';
+import { getArbitrumBridgePlugin } from 'arbitrum-bridge-mcp-server/ember-plugin';
+
+const registry = new PublicEmberPluginRegistry();
+registry.registerDeferredPlugin(getArbitrumBridgePlugin());
+
+for await (const plugin of registry.getPlugins()) {
+  if (plugin.type === 'swap' && plugin.name === 'Arbitrum Native Bridge') {
+    const action = plugin.actions.find(a => a.type === 'swap');
+    // await action?.callback({ fromToken, toToken, amount: 1_000000000000000000n, recipient: '0x...' });
+  }
+}
+```

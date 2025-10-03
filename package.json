@@ -63,6 +63,10 @@
       "import": "./dist/tools.js",
       "types": "./dist/tools.d.ts"
     },
+    "./ember-plugin": {
+      "import": "./dist/ember-plugin.js",
+      "types": "./dist/ember-plugin.d.ts"
+    },
     "./types": {
       "import": "./dist/types.js",
       "types": "./dist/types.d.ts"

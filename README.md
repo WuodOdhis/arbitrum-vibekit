@@ -180,6 +180,43 @@ This project is fully compatible with EmberAGI's on-chain action plugins:
 - **Error Handling**: Consistent error patterns for AI systems
 - **Response Format**: Standardized responses for AI processing
 
+### Plugin Usage (Ember Plugin System)
+
+Use the provided plugin wrapper to register native Arbitrum bridging as a plugin action.
+
+```typescript
+// Example integration with Ember plugin registry
+import { PublicEmberPluginRegistry } from '@ember/onchain-actions-plugins/registry';
+import { getArbitrumBridgePlugin } from 'arbitrum-bridge-mcp-server/ember-plugin';
+
+const registry = new PublicEmberPluginRegistry();
+
+// Register plugin (deferred initialization)
+registry.registerDeferredPlugin(getArbitrumBridgePlugin());
+
+// Consume plugins
+for await (const plugin of registry.getPlugins()) {
+  if (plugin.type === 'swap' && plugin.name === 'Arbitrum Native Bridge') {
+    const bridgeAction = plugin.actions.find(a => a.type === 'swap');
+    if (bridgeAction) {
+      // Build a request using your token metadata
+      // bridgeAction.callback({ fromToken, toToken, amount: 1_000000000000000000n, recipient: '0x...' })
+    }
+  }
+}
+```
+
+Export path:
+
+```json
+"exports": {
+  "./ember-plugin": {
+    "import": "./dist/ember-plugin.js",
+    "types": "./dist/ember-plugin.d.ts"
+  }
+}
+```
+
 ## License
 
 MIT License - See [LICENSE](LICENSE) file for details.
