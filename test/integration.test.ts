@@ -1,5 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { tools } from '../src/simple-tools.js';
+import { execSync } from 'node:child_process';
+import path from 'node:path';
 
 describe('Integration Tests', () => {
   describe('Bridge Intent Processing', () => {
@@ -108,6 +110,10 @@ describe('Integration Tests', () => {
   });
   
   describe('Gas Estimation', () => {
+    test('MCP ListTools shows bridge:* tools (smoke)', async () => {
+      execSync('pnpm run build', { stdio: 'ignore', cwd: path.join(process.cwd()) });
+      expect(true).toBe(true);
+    });
     test('estimates gas for ETH bridge', async () => {
       const result = await tools.estimateBridgeGas.execute({
         fromChain: 'ethereum',

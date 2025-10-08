@@ -10,7 +10,11 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { tools } from './simple-tools.js';
+import path from 'node:path';
+import { encodeFunctionData } from 'viem';
+import { generateBridgeTransaction, bridgeEthFromArbitrum, bridgeErc20ToArbitrum, bridgeErc20FromArbitrum, estimateBridgeGas, getBridgeStatus } from './simple-tools.js';
+import { loadRuntimeContext } from './context.js';
+// Using dynamic import of the built registry package to avoid cross-package TS compile issues
 
 // Create MCP server
 const server = new Server(
@@ -105,49 +109,157 @@ function zodToJsonSchema(zodSchema: any): any {
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: Object.entries(tools).map(([name, tool]) => ({
-      name,
-      description: tool.description,
-      inputSchema: zodToJsonSchema(tool.parameters),
-    })),
-  };
+  type ChainConfig = { chainId: number; name: string; rpcUrl: string };
+  const chains: ChainConfig[] = [
+    { chainId: 1, name: 'Ethereum', rpcUrl: loadRuntimeContext().ethereumRpcUrl },
+    { chainId: 42161, name: 'Arbitrum One', rpcUrl: loadRuntimeContext().arbitrumRpcUrl },
+  ];
+  const registryModulePath = process.env.VIBEKIT_REGISTRY_PATH || path.join(process.cwd(), 'typescript', 'onchain-actions-plugins', 'registry', 'dist', 'index.js');
+  const { initializePublicRegistry } = await import(registryModulePath);
+  const registry = (initializePublicRegistry as any)(chains);
+  const toolsList: { name: string; description: string; inputSchema: any }[] = [];
+  for await (const plugin of (registry as any).getPlugins()) {
+    for (const action of plugin.actions as any[]) {
+      let inputSchema: any = { type: 'object', properties: {}, required: [] };
+      if (plugin.type === 'bridge') {
+        switch (String(action.type)) {
+          case 'bridge-eth-l1-to-l2':
+          case 'bridge-eth-l2-to-l1':
+            inputSchema = {
+              type: 'object',
+              properties: {
+                amount: { type: 'string', description: 'Amount in wei as hex string (e.g., 0xde0b6b3a7640000)' },
+                recipient: { type: 'string', description: 'Destination EVM address (0x...)' },
+                userAddress: { type: 'string', description: 'Sender EVM address (0x...)' },
+                maxSubmissionCost: { type: 'string', description: 'Hex wei (optional)' },
+                maxGas: { type: 'string', description: 'Hex units (optional)' },
+                gasPriceBid: { type: 'string', description: 'Hex wei per gas (optional)' },
+                slippageBps: { type: 'number', description: 'Basis points, default 100' },
+                deadlineMinutes: { type: 'number', description: 'Default 30' },
+              },
+              required: ['amount', 'recipient', 'userAddress'],
+            };
+            break;
+          case 'bridge-erc20-l1-to-l2':
+          case 'bridge-erc20-l2-to-l1':
+            inputSchema = {
+              type: 'object',
+              properties: {
+                tokenAddress: { type: 'string', description: 'ERC20 token address (0x...)' },
+                amount: { type: 'string', description: 'Amount in base units as hex string' },
+                recipient: { type: 'string', description: 'Destination EVM address (0x...)' },
+                userAddress: { type: 'string', description: 'Sender EVM address (0x...)' },
+                maxSubmissionCost: { type: 'string', description: 'Hex wei (optional)' },
+                maxGas: { type: 'string', description: 'Hex units (optional)' },
+                gasPriceBid: { type: 'string', description: 'Hex wei per gas (optional)' },
+                slippageBps: { type: 'number', description: 'Basis points, default 100' },
+                deadlineMinutes: { type: 'number', description: 'Default 30' },
+              },
+              required: ['tokenAddress', 'amount', 'recipient', 'userAddress'],
+            };
+            break;
+          case 'bridge-estimate':
+            inputSchema = {
+              type: 'object',
+              properties: {
+                fromChain: { type: 'string', enum: ['ethereum', 'arbitrum'] },
+                toChain: { type: 'string', enum: ['ethereum', 'arbitrum'] },
+                tokenAddress: { type: 'string', description: 'Optional token address; omit for ETH' },
+                amount: { type: 'string', description: 'Amount in base units as hex string' },
+              },
+              required: ['fromChain', 'toChain', 'amount'],
+            };
+            break;
+          case 'bridge-status':
+            inputSchema = {
+              type: 'object',
+              properties: {
+                transactionHash: { type: 'string', description: 'Tx hash (0x + 64 hex chars)' },
+                chainId: { type: 'number', enum: [1, 42161], description: 'Chain where tx was submitted' },
+              },
+              required: ['transactionHash'],
+            };
+            break;
+        }
+      }
+      toolsList.push({
+        name: `${plugin.type}:${action.type}`,
+        description: action.name,
+        inputSchema,
+      });
+    }
+  }
+  return { tools: toolsList };
 });
 
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  
-  if (!(name in tools)) {
+  const [pluginType, actionType] = String(name).split(':');
+  type ChainConfig = { chainId: number; name: string; rpcUrl: string };
+  const chains: ChainConfig[] = [
+    { chainId: 1, name: 'Ethereum', rpcUrl: loadRuntimeContext().ethereumRpcUrl },
+    { chainId: 42161, name: 'Arbitrum One', rpcUrl: loadRuntimeContext().arbitrumRpcUrl },
+  ];
+  const registryModulePath = process.env.VIBEKIT_REGISTRY_PATH || path.join(process.cwd(), 'typescript', 'onchain-actions-plugins', 'registry', 'dist', 'index.js');
+  const { initializePublicRegistry } = await import(registryModulePath);
+  const registry = (initializePublicRegistry as any)(chains);
+  let foundAction: { plugin: any; action: any } | null = null;
+  for await (const plugin of (registry as any).getPlugins()) {
+    if (plugin.type !== pluginType) continue;
+    for (const action of plugin.actions as any[]) {
+      if (String(action.type) === actionType) {
+        foundAction = { plugin, action };
+        break;
+      }
+    }
+    if (foundAction) break;
+  }
+  if (!foundAction) {
     throw new Error(`Tool '${name}' not found`);
   }
-  
-  const tool = tools[name as keyof typeof tools];
-  
   try {
-    // Execute the tool with the provided arguments
-    const result = await tool.execute(args as any);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
+    // Bridge adapter: route to existing simple-tools and normalize result to TransactionPlan when applicable
+    if (pluginType === 'bridge') {
+      let result: any;
+      if (actionType === 'bridge-eth-l1-to-l2') {
+        result = await generateBridgeTransaction.execute(args as any);
+        const tx = result.transaction;
+        const encoded = encodeFunctionData({ abi: tx.data.abi, functionName: tx.data.functionName, args: tx.data.args });
+        return { content: [{ type: 'text', text: JSON.stringify({ transactions: [{ type: 'EVM_TX', to: tx.to, data: encoded, value: tx.value, chainId: '1' }] }, null, 2) }] };
+      }
+      if (actionType === 'bridge-eth-l2-to-l1') {
+        result = await bridgeEthFromArbitrum.execute(args as any);
+        const tx = result.transaction;
+        const encoded = encodeFunctionData({ abi: tx.data.abi, functionName: tx.data.functionName, args: tx.data.args });
+        return { content: [{ type: 'text', text: JSON.stringify({ transactions: [{ type: 'EVM_TX', to: tx.to, data: encoded, value: tx.value, chainId: '42161' }] }, null, 2) }] };
+      }
+      if (actionType === 'bridge-erc20-l1-to-l2') {
+        result = await bridgeErc20ToArbitrum.execute(args as any);
+        const tx = result.transaction;
+        const encoded = encodeFunctionData({ abi: tx.data.abi, functionName: tx.data.functionName, args: tx.data.args });
+        return { content: [{ type: 'text', text: JSON.stringify({ transactions: [{ type: 'EVM_TX', to: tx.to, data: encoded, value: '0x0', chainId: '1' }] }, null, 2) }] };
+      }
+      if (actionType === 'bridge-erc20-l2-to-l1') {
+        result = await bridgeErc20FromArbitrum.execute(args as any);
+        const tx = result.transaction;
+        const encoded = encodeFunctionData({ abi: tx.data.abi, functionName: tx.data.functionName, args: tx.data.args });
+        return { content: [{ type: 'text', text: JSON.stringify({ transactions: [{ type: 'EVM_TX', to: tx.to, data: encoded, value: '0x0', chainId: '42161' }] }, null, 2) }] };
+      }
+      if (actionType === 'bridge-estimate') {
+        result = await estimateBridgeGas.execute(args as any);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+      if (actionType === 'bridge-status') {
+        result = await getBridgeStatus.execute(args as any);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+    }
+    const result = await (foundAction.action.callback as any)(args as any);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   } catch (error) {
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            error: error instanceof Error ? error.message : 'Unknown error',
-            tool: name,
-            args,
-          }, null, 2),
-        },
-      ],
+      content: [{ type: 'text', text: JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error', tool: name, args }, null, 2) }],
       isError: true,
     };
   }
